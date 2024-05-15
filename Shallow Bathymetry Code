@@ -168,12 +168,8 @@ for pt_feature in pt_features:
     ratios = [['Ratio_B_R',R1_index],['Ratio_G_R',R2_index],['Ratio_AvgBG_R',R4_index]]
     #colors = [['R','R_In'],['G','G_In'],['B','B_In']]#['Gy','Gy_In']]
 
-    whereclause = "OBJECTID=684023"
-    #whereclause = "OBJECTID >= 378000 AND OBJECTID <= 383000 AND MOD(OBJECTID,100) = 0"
-    #whereclause = "OBJECTID >= 684000 AND OBJECTID <= 685000"
-    #whereclause = "MOD(OBJECTID,100) = 0"
     with PdfPages(pdf_out) as pdf:
-        with arcpy.da.UpdateCursor(pt_feature,fields,where_clause = whereclause) as cursor:
+        with arcpy.da.UpdateCursor(pt_feature,fields) as cursor:
             for row in cursor:
                 models = []
                 r2s=[]
