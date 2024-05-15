@@ -1,0 +1,137 @@
+#Import Libaries
+import arcpy
+import pandas as pd
+pd.options.mode.chained_assignment = None 
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
+from IPython.display import display
+import math
+import os
+
+#Setup
+GS_Pts = 'P2P_All_KnownBath'
+#Parts 1-22
+#Add desired parts to list, use single quotes
+pt_feature_names = ['UnknownPts_Part_22']
+pt_features =[]
+for pt_feature_name in pt_feature_names:
+    pt_features.append(os.path.join(r'N:\PRRIP\10385277_Lower_Platte_River_2D\Spatial\gdb',
+                          f'{pt_feature_name[11:]}.gdb',
+                          pt_feature_name))
+sr = arcpy.Describe(pt_features[0]).spatialReference
+arcpy.env.outputCoordinateSystem = sr
+17.	"""
+18.	Curve fit types: Input one of these in the eq variable
+19.	Linear
+20.	Exponential
+21.	Power
+22.	"""
+eq = 'Linear' #always linear after testing phase
+average_sample = 'Y'
+write_plots = 'Y'
+pdf_out = fr'N:\PRRIP\10385277_Lower_Platte_River_2D\Plot\Draft\Color_Depth_Plots\UnknownPts_22_Null.pdf' #location of output PDF of plots if desired
+#print controlvariable status
+print(f"""Current Settings
+Feature: {pt_features}
+Equation: {eq}
+Writing Plots: {write_plots}""")
+
+#Interpolation Routing ...FOR PLOTS ONLY... used if write plots is selected and does not affect the computed depths.
+def InterpRouting(eq,polyline,m,b):
+    #print(eq)
+    if eq == 'Linear':
+        y_vals_2 = LinInterp(polyline,m,b)
+    elif eq == 'Exponential':
+        y_vals_2 = ExpInterp(polyline,m,b)
+        #print(y_vals_2)
+    elif eq == 'Power':
+        y_vals_2 = PInterp(polyline,m,b)
+    return y_vals_2  
+
+#Linear Functions
+def Linfun(x_data,y_data,val):
+    model,r2,r2_old,flags = adjR(x_data,y_data, 1)
+    try:
+        m = model.coef[0]
+        b =model.coef[1]
+    except: #if the reurned model is a flat line there will only be one variable, y-intercept
+        m = 0
+        b = model[0]
+    depth = m*val+b
+    return model,r2,r2_old,m,b,depth,flags
+
+def LinInterp(line,m,b): #used for plots no depth calcs
+    y_vals = m*line+b
+    #print (y_vals)
+    return y_vals
+
+#Exponential Functions --> Depreciated, the follow functions were not selected for final runs
+def Expfun(x_data,y_data,val):
+    model,r2,r2_old = adjR(x_data,y_data, 1)
+    m = model.coef[0]
+    b = math.exp(model.coef[1])
+    depth = b*math.exp(m*val)
+    return model,r2,r2_old,m,b,depth
+
+def ExpInterp(line,m,b): #used for plots no depth calcs
+    y_vals = b*np.exp(m*line)
+    #print (y_vals)
+    return y_vals
+
+#Power Functions --> Depreciated, the follow functions were not selected for final runs
+def Pfun(x_data,y_data,val):
+    model,r2,r2_old = adjR(x_data,y_data, 1)
+    m = model.coef[0]
+    b = math.exp(model.coef[1])
+    depth = b*val**m
+    return model,r2,r2_old,m,b,depth
+
+def PInterp(line,m,b): #used for plots no depth calcs
+    y_vals = b*np.power(line,m)
+    return y_vals
+
+#Calcualte r2 This function computes the curve fit variables and computes r2
+#r2 old is an adjusted r2, originaly before the sample points were average it was though that this would counter act the tendency of r2 to increase with the addition of unrelated points
+#after averaging of sample points we changed to the standard r2 equation
+def adjR(x, y, degree):
+    flag_row = False #flag row is a variable to help idenitfy point that are causing problems with the math
+    coeffs = np.polyfit(x, y, degree)
+    p = np.poly1d(coeffs)
+    yhat = p(x)
+    ybar = np.sum(y)/len(y)
+    ssreg = np.sum((yhat-ybar)**2)
+    sstot = np.sum((y - ybar)**2)        
+    if len(y) == 1: #if there is only 1 point in sample set r2 = 0. No relationship can be gleanded from only 1 sample
+        r2 = 0
+        r2_old = 0
+    else:
+        if len(y) ==2:
+            r2_old = 1
+        else:
+            if len(pd.unique(y)) == 1: #if there is only 1 unique value Line is completely flat sstot =0 will result in error
+                r2_old = 1
+                flag_row = True
+            else: #if none of the caveots are found calculate adjusted r2
+                r2_old = 1- (((1-(ssreg/sstot))*(len(y)-1))/(len(y)-degree-1)) #Adjusted R2
+        if len(pd.unique(y)) == 1: #unlike having only 1 y value we can have multiple x values with the same y value with results in a flat line
+            print('Only 1 Unique Line Value, Flat Line')
+            flag_row = True
+            r2 = 1
+        else: #if none of the caveots are found calculate r2
+            r2 = 1-(np.sum((y-yhat)**2)/sstot)
+        #print(r2)
+
+    return p,r2,r2_old,flag_row
+
+#Addjust Extents, used to search for sample known points for the selected unknown point
+def extents(X,Y,offset,df):
+    lboundX = X - offset
+    uboundX = X + offset
+    lboundY = Y - offset
+    uboundY = Y + offset
+    df_filtered = df.query('X >= @lboundX and X <= @uboundX and Y >= @lboundY and Y <= @uboundY')
+    #display(df_filtered)
+    return df_filtered
+
+#Main program
