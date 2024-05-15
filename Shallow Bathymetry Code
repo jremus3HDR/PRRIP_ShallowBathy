@@ -21,12 +21,12 @@ for pt_feature_name in pt_feature_names:
                           pt_feature_name))
 sr = arcpy.Describe(pt_features[0]).spatialReference
 arcpy.env.outputCoordinateSystem = sr
-17.	"""
-18.	Curve fit types: Input one of these in the eq variable
-19.	Linear
-20.	Exponential
-21.	Power
-22.	"""
+"""
+Curve fit types: Input one of these in the eq variable
+Linear
+Exponential
+Power
+"""
 eq = 'Linear' #always linear after testing phase
 average_sample = 'Y'
 write_plots = 'Y'
@@ -135,3 +135,147 @@ def extents(X,Y,offset,df):
     return df_filtered
 
 #Main program
+st = datetime.datetime.now()
+start_time_formatted = st.strftime('%D, %H:%M:%S')
+print(f'Start Time: {start_time_formatted}')
+
+for pt_feature in pt_features:
+    ct = datetime.datetime.now() #current time
+    rt = ct-st #current runtime
+    print(f'Starting: {os.path.basename(pt_feature)}, Runtime: {str(rt)}')
+    print('')
+    extent = arcpy.Describe(pt_feature).extent
+    XMin,XMax,YMin,YMax = extent.XMin-1000,extent.XMax+1000,extent.YMin-1000,extent.YMax+1000
+    np_arr = arcpy.da.FeatureClassToNumPyArray (GS_Pts, ['SHAPE@X','SHAPE@Y','Depth','R','G','B'])
+    ref_pts_all = pd.DataFrame(np_arr)
+    ref_pts_all = ref_pts_all.rename(columns={'SHAPE@X': 'X', 'SHAPE@Y': 'Y'})
+    ref_pts_all.query('X >= @XMin and X <= @XMax and Y >= @YMin and Y <= @YMax', inplace = True)
+    ref_pts_all.loc[:,'color_sum'] = ref_pts_all.apply(lambda row: row['B']+row['R']+row['G'],axis=1)
+    ref_pts_all.query('color_sum >0',inplace = True)
+    
+    print(len(ref_pts_all))
+    #display(ref_pts_all)
+
+    fields = ['OID@','SHAPE@X','SHAPE@Y']
+    fields_new = [field.name for field in arcpy.ListFields(pt_feature)]
+    fields = fields + fields_new[3:]
+    print(fields)
+    #find Indexes of Color Groupings
+    R1_index = fields.index('Ratio_B_R') # Ratio B/R
+    R2_index = fields.index('Ratio_G_R') # Ratio G/R
+    R4_index = fields.index('Ratio_AvgBG_R') # Ratio AVG(B,G)/R
+
+    ratios = [['Ratio_B_R',R1_index],['Ratio_G_R',R2_index],['Ratio_AvgBG_R',R4_index]]
+    #colors = [['R','R_In'],['G','G_In'],['B','B_In']]#['Gy','Gy_In']]
+
+    whereclause = "OBJECTID=684023"
+    #whereclause = "OBJECTID >= 378000 AND OBJECTID <= 383000 AND MOD(OBJECTID,100) = 0"
+    #whereclause = "OBJECTID >= 684000 AND OBJECTID <= 685000"
+    #whereclause = "MOD(OBJECTID,100) = 0"
+    with PdfPages(pdf_out) as pdf:
+        with arcpy.da.UpdateCursor(pt_feature,fields,where_clause = whereclause) as cursor:
+            for row in cursor:
+                models = []
+                r2s=[]
+                ms = []
+                bs = []
+                #print(f'Point: {row[0]}')
+                i_offset = 10 #Initial offset
+                multiplier = 0 #multiplier for additional offset search
+                n_vals = 0 #numver of values in filtered array
+                while n_vals <= 24:
+                    #print(f'values in Array: {n_vals}, Mulitplier: {multiplier}')
+                    offset = 3*multiplier + i_offset
+                    pts = extents(row[fields.index('SHAPE@X')],
+                                      row[fields.index('SHAPE@Y')],offset,ref_pts_all)
+                    n_vals = len(pts)
+                    multiplier += 1
+                #print(f'values in Array: {n_vals}, Mulitplier: {multiplier}')
+                if row[0]%1000 == 0 or row[0] ==0:
+                    ct = datetime.datetime.now() #current time
+                    rt = ct-st #current runtime
+                    print(f'Point: {row[0]}, Runtime: {str(rt)}')
+                    print('')
+                    print(f'values in Array: {n_vals}, Mulitplier: {multiplier}')
+                pts.loc[:,'Ratio_B_R'] = pts.apply(lambda row: round(row['B']/row['R'],2),axis=1)
+                pts.loc[:,'Ratio_G_R']=round(pts.loc[:,'G']/pts.loc[:,'R'],2)
+                pts.loc[:,'Ratio_AvgBG_R']=round(((pts.loc[:,'B']+pts.loc[:,'G'])/2)/pts.loc[:,'R'],2)
+                for ratio,index in ratios:
+                    flag_row = False
+                    if average_sample == 'Y':
+                        pts_sample = pts.groupby(pts[ratio]).mean()
+                    else:
+                        pts_sample= pts
+                        pts_sample.set_index(ratio,drop = False,inplace = True)
+                    ratio_val = round(row[index],2) #analysis point ratio value rounded
+                    if eq == 'Linear':
+                        x_data = pts_sample.index
+                        y_data = pts_sample.Depth
+                        model,r2,r2_old,m,b,depth,flag_row = Linfun(x_data,y_data.values,ratio_val)
+                    elif eq == 'Exponential':
+                        x_data = pts_sample.index
+                        y_data = np.log(pts_sample.Depth)
+                        model,r2,r2_old,m,b,depth = Expfun(x_data,y_data.values,ratio_val)
+                    elif eq == 'Power':
+                        x_data = np.log(pts_sample.index)
+                        y_data = np.log(pts_sample.Depth)
+                        model,r2,r2_old,m,b,depth = Pfun(x_data,y_data.values,ratio_val)
+                    if flag_row == True:
+                        print(f'Warning in Point: {row[0]}, {ratio}')
+                    models.append(model)
+                    r2s.append(r2)
+                    ms.append(m)
+                    bs.append(b)
+                    #m = model.coef[0]
+                    #b = model.coef[1]
+                    #depth = m*row[index]+b
+                    row[index+1] = m #slope
+                    row[index+2] = b #Y intercept
+                    row[index+3] = r2 #R2
+                    row[fields.index(f'{ratio}_r2_old')] = r2_old
+                    row[index+6] = depth #Depth
+                    #Check to see if it is in the depth range
+                    if  depth < pts.Depth.min() or depth > pts.Depth.max():
+                        row[index+5] = 'N'
+                    else:
+                        row[index+5] = 'Y'
+                    #Check to see if it is in the ratio range
+                    if  ratio_val < pts[ratio].min() or ratio_val > pts[ratio].max():
+                        row[index+4] = 'N'
+                    else:
+                        row[index+4] = 'Y'
+                cursor.updateRow(row)
+
+                #Kick out plots
+                if row[0]%100==0 and write_plots == 'Y':
+                    %matplotlib inline
+                    #Unaveraged Line
+                    polyline = np.linspace(pts['Ratio_G_R'].min()-0.25, pts['Ratio_G_R'].max()+0.25)
+                    plt.scatter(pts['Ratio_B_R'], pts.Depth,color = 'Blue')
+                    plt.plot(polyline, InterpRouting(eq,polyline,ms[0],bs[0]), color='Blue', label=f'Ratio B/R r\u00b2: {round(r2s[0],3)}')
+                    #plt.plot(polyline, models[0](polyline), color='Blue', label=f'Ratio B/R r\u00b2: {round(r2s[0],3)}')
+                    plt.scatter(pts['Ratio_G_R'], pts.Depth,color = 'Green')
+                    plt.plot(polyline, InterpRouting(eq,polyline,ms[1],bs[1]), color='Green', label=f'Ratio G/R r\u00b2: {round(r2s[1],3)}')
+                    #plt.plot(polyline, models[1](polyline), color='Green', label=f'Ratio G/R r\u00b2: {round(r2s[1],3)}')
+                    plt.scatter(pts['Ratio_AvgBG_R'], pts.Depth,color = 'Red')
+                    plt.plot(polyline, InterpRouting(eq,polyline,ms[2],bs[2]), color='Red', label=f'Ratio AVG(B,G)/R r\u00b2: {round(r2s[2],3)}')
+                    #plt.plot(polyline, models[2](polyline), color='Red', label=f'Ratio AVG(B,G)/R r\u00b2: {round(r2s[2],3)}')
+                    plt.xlabel("Color Ratio")
+                    plt.ylabel(r"Depth (ft)")
+                    plt.legend(loc='upper left')
+                    plt.ylim(0,pts.Depth.min()+0.5)
+                    plt.title(f'Point {row[0]}: Unaveraged Neighbor Points')
+                    pdf.savefig()
+                    plt.close()
+
+            print('')
+    
+    ct = datetime.datetime.now() #current time
+    rt = ct-st #current runtime
+    print(f'Finishing: {os.path.basename(pt_feature)}, Runtime: {str(rt)}')
+    print('')
+    
+ct = datetime.datetime.now()
+rt = ct-st
+print(f'Runtime: {str(rt)}')
+print('Done')
